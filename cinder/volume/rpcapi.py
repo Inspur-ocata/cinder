@@ -264,6 +264,11 @@ class VolumeAPI(rpc.RPCAPI):
         cctxt.cast(ctxt, 'extend_volume', volume=volume, new_size=new_size,
                    reservations=reservations)
 
+    def extend_volume_live(self, ctxt, volume, new_size, reservations):
+        cctxt = self._get_cctxt(volume.service_topic_queue)
+        cctxt.cast(ctxt, 'extend_volume_live', volume=volume, new_size=new_size,
+                   reservations=reservations)
+
     def migrate_volume(self, ctxt, volume, dest_backend, force_host_copy):
         backend_p = {'host': dest_backend.host,
                      'cluster_name': dest_backend.cluster_name,

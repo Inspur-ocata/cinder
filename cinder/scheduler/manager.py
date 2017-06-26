@@ -366,6 +366,29 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                             project_id=volume.project_id)
             _extend_volume_set_error(self, context, ex, request_spec)
 
+    def extend_volume_live(self, context, volume, new_size, reservations,
+                           request_spec=None, filter_properties=None):
+
+        def _extend_volume_live_set_error(self, context, ex, request_spec):
+            volume_state = {'volume_state': {'status': 'in-use'}}
+            self._set_volume_state_and_notify('extend_volume_live', volume_state,
+                                              context, ex, request_spec)
+
+        if not filter_properties:
+            filter_properties = {}
+
+        filter_properties['new_size'] = new_size
+        try:
+            self.driver.backend_passes_filters(context,
+                                               volume.service_topic_queue,
+                                               request_spec, filter_properties)
+            volume_rpcapi.VolumeAPI().extend_volume_live(context, volume, new_size,
+                                                    reservations)
+        except exception.NoValidBackend as ex:
+            QUOTAS.rollback(context, reservations,
+                            project_id=volume.project_id)
+            _extend_volume_live_set_error(self, context, ex, request_spec) 
+
     def _set_volume_state_and_notify(self, method, updates, context, ex,
                                      request_spec, msg=None):
         # TODO(harlowja): move into a task that just does this later.

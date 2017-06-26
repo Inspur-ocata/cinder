@@ -2241,6 +2241,57 @@ class VolumeManager(manager.CleanableManager,
         LOG.info(_LI("Extend volume completed successfully."),
                  resource=volume)
 
+    def extend_volume_live(self, context, volume, new_size, reservations):
+        try:
+            # NOTE(flaper87): Verify the driver is enabled
+            # before going forward. The exception will be caught
+            # and the volume status updated.
+            utils.require_driver_initialized(self.driver)
+        except exception.DriverNotInitialized:
+            with excutils.save_and_reraise_exception():
+                volume.status = 'error_extending'
+                volume.save()
+
+        project_id = volume.project_id
+        size_increase = (int(new_size)) - volume.size
+        self._notify_about_volume_usage(context, volume, "resize.start")
+        try:
+            self.driver.extend_volume(volume, new_size)
+        except Exception:
+            LOG.exception(_LE("Extend volume lively failed."),
+                          resource=volume)
+            try:
+                self.db.volume_update(context, volume.id,
+                                      {'status': 'error_extending'})
+                raise exception.CinderException(_("Volume %s: Error trying "
+                                                  "to extend volume lively") %
+                                                volume.id)
+            finally:
+                QUOTAS.rollback(context, reservations, project_id=project_id)
+                return
+
+        QUOTAS.commit(context, reservations, project_id=project_id)
+        volume.update({'size': int(new_size), 'status': 'in-use'})
+        volume.save()
+        pool = vol_utils.extract_host(volume.host, 'pool')
+        if pool is None:
+            # Legacy volume, put them into default pool
+            pool = self.driver.configuration.safe_get(
+                'volume_backend_name') or vol_utils.extract_host(
+                    volume.host, 'pool', True)
+
+        try:
+            self.stats['pools'][pool]['allocated_capacity_gb'] += size_increase
+        except KeyError:
+            self.stats['pools'][pool] = dict(
+                allocated_capacity_gb=size_increase)
+
+        self._notify_about_volume_usage(
+            context, volume, "resize.end",
+            extra_usage_info={'size': int(new_size)})
+        LOG.info(_LI("Extend volume lively completed successfully."),
+                 resource=volume)
+
     def _is_our_backend(self, host, cluster_name):
         return ((not cluster_name and
                  vol_utils.hosts_are_equivalent(self.driver.host, host)) or

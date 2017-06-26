@@ -1373,6 +1373,107 @@ class API(base.Base):
         LOG.info(_LI("Extend volume request issued successfully."),
                  resource=volume)
 
+    def extend_live(self, context, volume, new_size):
+        value = {'status': 'extending'}
+        expected = {'status': 'in-use'}
+
+        def _roll_back_status():
+            msg = _LE('Could not return volume %s to in-use.')
+            try:
+                if not volume.conditional_update(expected, value):
+                    LOG.error(msg, volume.id)
+            except Exception:
+                LOG.exception(msg, volume.id)
+
+        size_increase = (int(new_size)) - volume.size
+        if size_increase <= 0:
+            msg = (_("New size for extend-live must be greater "
+                     "than current size. (current: %(size)s, "
+                     "extended: %(new_size)s).") % {'new_size': new_size,
+                                                    'size': volume.size})
+            raise exception.InvalidInput(reason=msg)
+
+        result = volume.conditional_update(value, expected)
+        if not result:
+            msg = _('Volume %(vol_id)s status must be in-use '
+                    'to extend lively.') % {'vol_id': volume.id}
+            raise exception.InvalidVolume(reason=msg)
+
+        rollback = True
+        try:
+            values = {'per_volume_gigabytes': new_size}
+            QUOTAS.limit_check(context, project_id=context.project_id,
+                               **values)
+            rollback = False
+        except exception.OverQuota as e:
+            quotas = e.kwargs['quotas']
+            raise exception.VolumeSizeExceedsLimit(
+                size=new_size, limit=quotas['per_volume_gigabytes'])
+        finally:
+            # NOTE(geguileo): To mimic behavior before conditional_update we
+            # will rollback status on quota reservation failure regardless of
+            # the exception that caused the failure.
+            if rollback:
+                _roll_back_status()
+
+        try:
+            reservations = None
+            reserve_opts = {'gigabytes': size_increase}
+            QUOTAS.add_volume_type_opts(context, reserve_opts,
+                                        volume.volume_type_id)
+            reservations = QUOTAS.reserve(context,
+                                          project_id=volume.project_id,
+                                          **reserve_opts)
+        except exception.OverQuota as exc:
+            gigabytes = exc.kwargs['usages']['gigabytes']
+            gb_quotas = exc.kwargs['quotas']['gigabytes']
+
+            consumed = gigabytes['reserved'] + gigabytes['in_use']
+            msg = _LE("Quota exceeded for %(s_pid)s, tried to extend volume "
+                      "lively by %(s_size)sG, (%(d_consumed)dG of %(d_quota)dG "
+                      "already consumed).")
+            LOG.error(msg, {'s_pid': context.project_id,
+                            's_size': size_increase,
+                            'd_consumed': consumed,
+                            'd_quota': gb_quotas})
+            raise exception.VolumeSizeExceedsAvailableQuota(
+                requested=size_increase, consumed=consumed, quota=gb_quotas)
+        finally:
+            # NOTE(geguileo): To mimic behavior before conditional_update we
+            # will rollback status on quota reservation failure regardless of
+            # the exception that caused the failure.
+            if reservations is None:
+                _roll_back_status()
+
+        volume_type = {}
+        if volume.volume_type_id:
+            volume_type = volume_types.get_volume_type(context.elevated(),
+                                                       volume.volume_type_id)
+
+        request_spec = {
+            'volume_properties': volume,
+            'volume_type': volume_type,
+            'volume_id': volume.id
+        }
+
+        try:
+            self.scheduler_rpcapi.extend_volume_live(context, volume, new_size,
+                                                reservations, request_spec)
+        except exception.ServiceTooOld as e:
+            # NOTE(erlon): During rolling upgrades scheduler and volume can
+            # have different versions. This check makes sure that a new
+            # version of the volume service won't break.
+            msg = _LW("Failed to send extend volume lively request to scheduler. "
+                      "Falling back to old behaviour. This is normal during a "
+                      "live-upgrade. Error: %(e)s")
+            LOG.warning(msg, {'e': e})
+            # TODO(erlon): Remove in Pike
+            self.volume_rpcapi.extend_volume_live(context, volume, new_size,
+                                             reservations)
+
+        LOG.info(_LI("Extend volume lively request issued successfully."),
+                 resource=volume)
+
     @wrap_check_policy
     def migrate_volume(self, context, volume, host, cluster_name, force_copy,
                        lock_volume):

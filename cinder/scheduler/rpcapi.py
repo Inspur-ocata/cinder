@@ -162,6 +162,22 @@ class SchedulerAPI(rpc.RPCAPI):
 
         return cctxt.cast(ctxt, 'extend_volume', **msg_args)
 
+    @rpc.assert_min_rpc_version('3.2')
+    def extend_volume_live(self, ctxt, volume, new_size, reservations,
+                           request_spec, filter_properties=None):
+        cctxt = self._get_cctxt()
+        
+        request_spec_p = jsonutils.to_primitive(request_spec)
+        msg_args = {
+            'volume': volume,
+            'new_size': new_size,
+            'reservations': reservations,
+            'request_spec': request_spec_p,
+            'filter_properties': filter_properties,
+        }
+
+        return cctxt.cast(ctxt, 'extend_volume_live', **msg_args)
+
     def get_pools(self, ctxt, filters=None):
         cctxt = self._get_cctxt()
         return cctxt.call(ctxt, 'get_pools', filters=filters)

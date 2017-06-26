@@ -291,6 +291,26 @@ class VolumeActionsController(wsgi.Controller):
 
         return webob.Response(status_int=http_client.ACCEPTED)
 
+    @wsgi.action('os-extend-live')
+    def _extend_live(self, req, id, body):
+        """Extend size of volume lively."""
+        context = req.environ['cinder.context']
+        # Not found exception will be handled at the wsgi level
+        volume = self.volume_api.get(context, id)
+
+        try:
+            size = int(body['os-extend-live']['new_size'])
+        except (KeyError, ValueError, TypeError):
+            msg = _("New volume size must be specified as an integer.")
+            raise webob.exc.HTTPBadRequest(explanation=msg)
+
+        try:
+            self.volume_api.extend_live(context, volume, size)
+        except exception.InvalidVolume as error:
+            raise webob.exc.HTTPBadRequest(explanation=error.msg)
+
+        return webob.Response(status_int=http_client.ACCEPTED)
+
     @wsgi.action('os-update_readonly_flag')
     def _volume_readonly_update(self, req, id, body):
         """Update volume readonly flag."""
